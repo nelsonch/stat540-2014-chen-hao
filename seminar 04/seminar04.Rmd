@@ -126,21 +126,18 @@ pairs(pairDat, upper.panel=panel.cor)
 
 #### Step 3: Convert your numeric matrix of p-values into a matrix of TRUE/FALSE or zeros and ones by hard-threshholding, e.g. conventional 0.05 level, and make some interesting row or column summaries.
 
-Convert the above matrix of p-values into a matrix of TURE/FALSE, the cut-off p-value is 0.05. The following table shows the first 10 rows of such a table. 
+Convert the above matrix of p-values into a matrix of 1/0 (1 stands for significance), the cut-off p-value is 0.05. The following table shows the first 10 rows of such a table. 
 ```{r results = 'asis'}
 cutoff <- 0.05
-tfRes <- Res
-tfRes$t.test <- ifelse(tfRes$t.test < cutoff, TRUE, FALSE)
-tfRes$wilcox.test <- ifelse(tfRes$wilcox.test < cutoff, TRUE, FALSE)
-tfRes$ks.test <- ifelse(tfRes$ks.test < cutoff, TRUE, FALSE)
+sumRes <- Res[, c("t.test", "wilcox.test", "ks.test")]
+sumRes <- matrix(as.numeric(sumRes < cutoff), nrow = nrow(sumRes))
+colnames(sumRes) <- c("t.test", "wilcox.test", "ks.test")
+tfRes <- data.frame(gene = Res$gene, as.data.frame(sumRes))
 htmlPrint(tfRes[1:10, ])
 ```
 
 How many genes are significant according to the different tests? 
 ```{r}
-sumRes <- Res[, c("t.test", "wilcox.test", "ks.test")]
-sumRes <- matrix(as.numeric(sumRes < cutoff), nrow = nrow(sumRes))
-colnames(sumRes) <- c("t.test", "wilcox.test", "ks.test")
 vennDiagram(vennCounts(sumRes[, c("t.test", "wilcox.test", "ks.test")]))
 ```
 
@@ -148,7 +145,7 @@ Show the 18 genes which are significant from at least one of the tests.
 ```{r results = 'asis'}
 testsum <- rowSums(sumRes)
 sumRes <- as.data.frame(sumRes)
-sumRes <- cbind(gene = tfRes$gene, sumRes, sum.test = testsum)
+sumRes <- cbind(gene = Res$gene, sumRes, sum.test = testsum)
 hitRes <- arrange(subset(sumRes, sum.test > 0), desc(sum.test))
 htmlPrint(hitRes)
 ```
