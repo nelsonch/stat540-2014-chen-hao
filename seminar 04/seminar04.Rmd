@@ -21,16 +21,10 @@ htmlPrint <- function(x, ..., digits = 0, include.rownames = FALSE) {
 
 ### <dim id="1b">[Load the photoRec dataset and required packages](#1a)
 The following datasets will be covered in this seminar:
-* [GSE4051_MINI.rds](https://github.com/jennybc/stat540_2014/blob/master/examples/photoRec/data/GSE4051_MINI.rds): mini gene expression dataset
 * [GSE4051_data.tsv](https://github.com/jennybc/stat540_2014/blob/master/examples/photoRec/data/GSE4051_data.tsv): full data matrix 
 * [GSE4051_design.rds](https://github.com/jennybc/stat540_2014/blob/master/examples/photoRec/data/GSE4051_design.rds): experimental design
 
 Load required datasets:
-```{r}
-kDat <- readRDS("GSE4051_MINI.rds")
-str(kDat)
-```
-
 ```{r}
 prDat <- read.table("GSE4051_data.tsv")
 str(prDat, max.level = 0)
