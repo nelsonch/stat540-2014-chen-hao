@@ -6,6 +6,8 @@ __2014-02-10__
 * <dim id="2a">[The "you try" questions](#2b)
 * <dim id="3a">[Take-home problem](#3b)
 
+> The R markdown file can be found on my [Github](https://github.com/nelsonch/stat540-2014-chen-hao/blob/master/seminar%2003/seminar03_graphics-lattice.Rmd).
+
 ```{r include = FALSE}
 opts_chunk$set(tidy = F, warning=F, comment=NA, prompt=T)
 ```
