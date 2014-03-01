@@ -1,0 +1,251 @@
+## STAT 540 Seminar 05: Fitting and interpreting linear models (low volume)
+### Hao Chen
+__2014-02-28__
+
+* <dim id="1a">[Repeat the examples in the seminar](#1b)
+* <dim id="2a">[Take-home exercise](#2b)
+
+> The R markdown file can be found on my [Github](https://github.com/nelsonch/stat540-2014-chen-hao/blob/master/seminar%2005/seminar05.Rmd).
+
+```{r include = FALSE}
+opts_chunk$set(tidy = F, warning=F, comment=NA, prompt=T)
+```
+
+The following data files will be used in this seminar:
+* [GSE4051_data.tsv](https://github.com/jennybc/stat540_2014/blob/master/examples/photoRec/data/GSE4051_data.tsv): full data matrix 
+* [GSE4051_design.rds](https://github.com/jennybc/stat540_2014/blob/master/examples/photoRec/data/GSE4051_design.rds): experimental design
+
+Load these data files:
+```{r}
+prDat <- read.table("GSE4051_data.tsv")
+str(prDat, list.len = 5)
+prDes <- readRDS("GSE4051_design.rds")
+str(prDes)
+```
+
+Load required R packages:
+```{r}
+library(lattice)
+```
+
+### <dim id="1b">[Repeat the examples in the seminar](#1a)
+#### Write a function to prepare and stripplot a mini-dataset for a small number of genes.
+```{r}
+prepareData <- function(myGenes) {
+    miniDat <- t(prDat[myGenes, ])
+    miniDat <- data.frame(gExp = as.vector(miniDat),
+                          gene = factor(rep(colnames(miniDat), each =
+                          nrow(miniDat)), levels = colnames(miniDat)))
+    miniDat <- suppressWarnings(data.frame(prDes, miniDat))
+    miniDat
+}
+
+stripplotIt <- function(myData,...) {
+    stripplot(gExp ~ devStage | gene, myData, group = gType, jitter.data = TRUE, 
+              auto.key = TRUE, type = c('p', 'a'), grid = TRUE, ...)
+}
+```
+
+Test if the functions work properly.
+```{r}
+luckyGenes <- c("1419655_at","1438815_at")
+jDat <- prepareData(luckyGenes)
+str(jDat)
+stripplotIt(jDat)
+stripplotIt(jDat, pch = 17, cex = 3)
+```
+
+#### Do a two-sample t-test
+Let's test for a difference in expected gene expression for probeset "1456341\_a\_at" at developmental stage P2 vs. 4 weeks post-natal (ignoring genotype, i.e. lump the wild types and knockouts together). Let's assume a common variance in the two groups.
+
+```{r}
+newDat <- prepareData("1456341_a_at")
+t.test(gExp ~ devStage, newDat, var.equal = TRUE, 
+       subset = devStage %in% c("P2", "4_weeks"))
+```
+
+#### Fit a linear model with a categorical covariate
+Focus on probeset "1438786_a_at".
+```{r}
+stripplotIt(mDat <- prepareData("1438786_a_at"))
+```
+
+Focus just on the wild type data for now. Model expression as a function of the devStage factor. 
+```{r}
+mFit <- lm(gExp ~ devStage, mDat, subset = gType == "wt")
+summary(mFit)
+```
+
+#### Perform inference for a contrast
+test whether the P2 and P10 effects are equal or, equivalently, whether their difference is equal to zero.
+```{r}
+coef(mFit)
+contMat <- matrix(c(0, 1, 0, -1, 0), nrow = 1)
+(obsDiff <- contMat %*% coef(mFit))
+```
+
+Check that this really is the observed difference in sample mean for the wild type mice, P2 vs. P10.
+```{r}
+(sampMeans <- aggregate(gExp ~ devStage, mDat, FUN = mean,
+                        subset = gType == "wt"))
+with(sampMeans, gExp[devStage == "P2"] - gExp[devStage == "P10"])
+```
+* Agrees with the observed difference we computed by multiplying our contrast matrix and the estimated parameters.
+
+The variance-covariance matrix of the parameters estimated in the original model can be obtained with `vcov()` and is equal to $(X^{T}X)^{-1}\hat{\sigma}^{2}$. 
+```{r}
+all(summary(mFit)$coefficients[ , "Std. Error"] == sqrt(diag(vcov(mFit))))
+```
+
+Returning to our test of the P2 vs. P10 contrast, recall that the variance-covariance matrix of a contrast obtained as $C\hat{\alpha}$ is $C(X^{T}X)^{-1}C^{T}\hat{\sigma}^{2}$.
+```{r}
+(estSe <- contMat %*% vcov(mFit) %*% t(contMat))
+(testStat <- obsDiff/estSe)
+2 * pt(abs(testStat), df = df.residual(mFit), lower.tail = FALSE)
+```
+* This p-value is rather large and we conclude there is no difference.
+
+#### Fit a linear model with two categorical covariates
+Let's focus on probeset "1448690_at".
+```{r}
+stripplotIt(oDat <- prepareData("1448690_at"))
+oFitBig <- lm(gExp ~ gType * devStage, oDat)
+summary(oFitBig)$coef
+```
+
+Fit a related, smaller model with the same covariates, but this time omit the interaction.
+```{r}
+oFitSmall <- lm(gExp ~ gType + devStage, oDat)
+anova(oFitSmall, oFitBig)
+```
+* With a p-value awfully close to one, we confirm that, no, there is no evidence for interaction in this particular case.
+
+To get a more exciting result, take a look at probeset "1429225_at".
+```{r}
+stripplotIt(pDat <- prepareData("1429225_at"), cex = 2)
+pFitBig <- lm(gExp ~ gType * devStage, pDat)
+pFitSmall <- lm(gExp ~ gType + devStage, pDat)
+anova(pFitSmall, pFitBig)
+```
+* The interaction here is highly statistically significant.
+
+### <dim id="2b">[Take-home exercise](#2a)
+#### 1. Can you use data aggregation strategies from last week to do model fitting for small sets of genes?
+Load `plyr` package.
+```{r}
+library(plyr)
+```
+
+Model expression as a function of devStage factor for each gene (probe) and focus only on wildtype data.
+```{r}
+modelFit <- function(jDat){
+  foo <- dlply(jDat, ~ gene, function(x){
+    Fit <- lm(gExp ~ gType * devStage, data = x)
+  })
+  return(foo)
+}
+```
+
+Use probes "1419655\_at" and "1438815\_at" to test if the function works.
+```{r}
+jDat <- prepareData(c("1419655_at","1438815_at"))
+stripplotIt(jDat)
+modelFit(jDat)
+```
+
+#### 2. Experiment with a quantitative version of devStage, which we called `age`. Can you fit linear and quadratic models to the expression data for one or several genes? How you also can add fitted regression curves to your scatterplots?
+
+Load `car` package.
+```{r}
+library(car)
+```
+
+(a) Fit linear models
+```{r}
+prDes$age <- recode(prDes$devStage, 
+                    "'E16'=-2; 'P2'=2; 'P6'=6; 'P10'=10; '4_weeks'=28",
+                    as.factor.result = FALSE)
+
+modelFitLin <- function(jDat){
+  foo <- dlply(jDat, ~ gene, function(x){
+    Fit <- lm(gExp ~ gType * age, data = x)
+    })
+  return(foo)
+}
+
+xyplotLin <- function(myData,...) {
+  xyplot(gExp ~ age | gene, myData, group = gType, 
+         panel = panel.superpose,
+            panel.groups = function(x, y,...){
+              panel.xyplot(x, y,...)
+              panel.lmline(x, y,...)
+              })
+}
+```
+
+Use probes "1419655\_at" and "1438815\_at" to test if the functions work.
+```{r}
+gDat <- prepareData(c("1419655_at","1438815_at"))
+head(gDat)
+xyplotLin(gDat)
+modelFitLin(gDat)
+```
+
+(b) Fit quadratic models
+```{r}
+modelFiteQua <- function(myData){
+  foo <- dlply(myData, ~ gene, function(x){
+    Fit <- lm(gExp ~ gType * (age + I(age^2)), data = x)
+    })
+  return(foo)
+}
+
+xyplotQua <- function(myData,...) {
+  xyplot(gExp ~ age | gene, myData, group = gType, 
+         panel = panel.superpose,
+         panel.groups = function(x, y,...){
+           fits <- lm(y ~ x + I(x^2))
+           panel.xyplot(x, y,...)
+           a0 <- summary(fits)$coefficient[1,"Estimate"]
+           a1 <- summary(fits)$coefficient[2,"Estimate"]
+           a2 <- summary(fits)$coefficient[3,"Estimate"]
+           yfit <- function(x){a0 + a1*x + a2*x^2}
+           panel.curve(yfit, from = -2, to = 28, n = 100,...)
+         })
+}
+```
+
+Use probes "1419655\_at" and "1438815\_at" to test if the functions work.
+```{r}
+xyplotQua(gDat)
+modelFiteQua(gDat)
+```
+
+#### 3. Drop the 4 week data and revisit this dataset with linear and quadratic models.
+
+(a) Prepare a function to drop the 4 week data.
+```{r}
+DropFourWeek <- function(myGenes){
+  Dat <- prepareData(myGenes)
+  Dat <- droplevels(subset(Dat, devStage != "4_weeks"))
+  return(Dat)
+  }
+```
+
+(b) Use probes "1419655\_at" and "1438815\_at" to test if the functions work.
+```{r}
+hDat <- DropFourWeek(c("1419655_at","1438815_at"))
+str(hDat)
+```
+
+(c) Fit linear models.
+```{r}
+xyplotLin(hDat)
+modelFitLin(hDat)
+```
+
+(d) Fit quadratic models.
+```{r}
+xyplotQua(hDat)
+modelFiteQua(hDat)
+```
