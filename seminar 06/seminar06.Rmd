@@ -1,0 +1,219 @@
+## STAT 540 Seminar 06: Fitting and interpreting linear models (high volume)
+### Hao Chen
+__2014-02-28__
+
+* <dim id="1a">[Repeat the examples in the seminar](#1b)
+* <dim id="2a">[Take-home exercise](#2b)
+
+> The R markdown file can be found on my [Github](https://github.com/nelsonch/stat540-2014-chen-hao/blob/master/seminar%2006/seminar06.Rmd).
+
+```{r include = FALSE}
+opts_chunk$set(tidy = F, warning=F, comment=NA, prompt=T)
+```
+
+The following data files will be used in this seminar:
+* [GSE4051_data.tsv](https://github.com/jennybc/stat540_2014/blob/master/examples/photoRec/data/GSE4051_data.tsv): full data matrix 
+* [GSE4051_design.rds](https://github.com/jennybc/stat540_2014/blob/master/examples/photoRec/data/GSE4051_design.rds): experimental design
+
+Load these data files:
+```{r}
+prDat <- read.table("GSE4051_data.tsv")
+str(prDat, list.len = 5)
+prDes <- readRDS("GSE4051_design.rds")
+str(prDes)
+```
+
+Load required R packages:
+```{r}
+library(limma)
+library(lattice)
+```
+
+User-written functions:
+* `prepareData`: extract excerpts from the data files.
+* `stripplotIt`: stripplot excerpts from the data files. 
+```{r, echo=FALSE}
+prepareData <- function(myGenes) {
+    miniDat <- t(wtDat[myGenes, ])
+    miniDat <- data.frame(gExp = as.vector(miniDat),
+                          gene = factor(rep(colnames(miniDat), each =
+                          nrow(miniDat)), levels = colnames(miniDat)))
+    miniDat <- suppressWarnings(data.frame(wtDes, miniDat))
+    miniDat
+}
+stripplotIt <- function(myData,...) {
+    stripplot(gExp ~ devStage | gene, myData, jitter.data = TRUE, 
+              auto.key = TRUE, type = c('p', 'a'), grid = TRUE, ...)
+}
+```
+
+### <dim id="1b">[Repeat the examples in the seminar](#1a)
+#### Fit a linear model: explain gene expression in the wild type mice as a function of developmental stage (one-way ANOVA)
+```{r}
+wtDes <- subset(prDes, gType == "wt")
+str(wtDes)
+wtDat <- subset(prDat, select = prDes$gType == "wt")
+str(wtDat, list.len = 5)
+```
+
+Fit the model with `limma`.
+```{r}
+wtDesMat <- model.matrix(~devStage, wtDes)
+wtFit <- lmFit(wtDat, wtDesMat)
+wtEbFit <- eBayes(wtFit)
+```
+
+For each probe, test if it has differential expression across the five devStages.
+```{r}
+(dsHits <- topTable(wtEbFit, coef = grep("devStage", colnames(coef(wtEbFit)))))
+```
+
+Extracting and plotting data to produce a plot for hits 3, 6, and 9 on the list.
+```{r}
+stripplotIt(prepareData(rownames(dsHits)[c(3, 6, 9)]))
+```
+
+#### Be the boss of `topTable()`
+How many probes have Benjamini-Hochberg ("BH") adjusted p-values for the F test conducted above that are less than 1e-05?
+> Note that the default adjustment method for `topTable()` fcuntion is "BH" adjustment method, and the `p.value` argument in the `topTable()` refers to the adjusted p-value, not the raw p-value.
+
+```{r}
+cutoff <- 1e-05
+dsHits <- topTable(wtEbFit, coef = grep("devStage", colnames(coef(wtEbFit))),
+                   p.value = cutoff, n = Inf)
+n <- nrow(dsHits)
+```
+Answer: `r n` probes.
+
+What is the 63rd hit on this list? Provide it's Affy ID, F statistic, BH adjusted p-value, and the estimated effect for developmental stage "P6" in that order.
+```{r}
+dsHits[63, c("F", "adj.P.Val", "devStageP6")]
+```
+
+Consider the effects associated with developmental stages P2 and P10. Scatterplot the t statistics for the test that the P2 effect is zero against that for P10.
+> `"sort = none"` arugment in the `topTable()` function will display the probes in the orginal order, and `"n = Inf"` will return all the probes.
+
+```{r, fig.width=12, fig.height=7}
+P2Hits <- topTable(wtEbFit, coef = "devStageP2", n = Inf, sort = "none")
+P10Hits <- topTable(wtEbFit, coef = "devStageP10", n = Inf, sort = "none")
+fig1 <- xyplot(P10Hits$t ~ P2Hits$t, aspect = 1,
+               xlab = "t-statistic for P2 effect",
+               ylab = "t-statistic for P10 effect",
+               xlim = c(-20, 16), ylim = c(-20, 16),
+               panel = function(x, y, ...) {
+               panel.smoothScatter(x, y, nbin = 100, ...)
+               panel.abline(a = 0, b = 1, col = "orange")
+               })
+fig2 <- densityplot(~ P10Hits$adj.P.Val + P2Hits$adj.P.Val, auto.key = TRUE,
+                    plot.points = FALSE, n = 300)
+print(fig1, position = c(0, 0, 0.52, 1), more = TRUE)
+print(fig2, position = c(0.48, 0, 1, 1))
+```
+
+If you require a BH adjusted p-value less than 1e-03, how many hits do you get for P2? How many for P10? How much overlap is there?
+
+```{r}
+cutoff <- 1e-03
+foo <- data.frame(P2 = P2Hits$adj.P.Val < cutoff,
+                  P10 = P10Hits$adj.P.Val < cutoff)
+addmargins(with(foo, table(P2, P10)))
+```
+There are 53 hits for P2, 747 for P10, with an overlap of 52.
+
+#### Perform inference for some contrasts
+Let's try to distinguish genes that have stable expression at the last three developmental stages (P6, P10, and 4_weeks) from those that do not.
+
+```{r}
+colnames(wtDesMat)
+(cont.matrix <- makeContrasts(P10VsP6 = devStageP10 - devStageP6, 
+                              fourweeksVsP10 = devStage4_weeks - devStageP10, 
+                              levels = wtDesMat))
+wtFitCont <- contrasts.fit(wtFit, cont.matrix)
+wtEbFitCont <- eBayes(wtFitCont)
+topTable(wtEbFitCont)
+```
+
+The top hits are probes where there is big change from P6 to P10, from P10 to 4_weeks, or both. Plot the data from the top 4 hits.
+```{r}
+foo <- topTable(wtEbFitCont)
+stripplotIt(prepareData(rownames(foo)[1:4]))
+```
+
+Use decideTests() to adjust the p-values for both contrasts globally, i.e. all together and then threshhold them at a cutoff of 1e-04.
+```{r}
+cutoff <- 1e-04
+wtResCont <- decideTests(wtEbFitCont, p.value = cutoff, method = "global")
+summary(wtResCont)
+```
+* There are 4 probes that go down from P6 to P10 and no hits going the other way. 
+* There are 8 probes that go down from P10 to 4_weeks and 46 going the other way. 
+
+Here are the 4 that decline from P6 to P10.
+```{r}
+hits1 <- rownames(prDat)[which(wtResCont[, "P10VsP6"] < 0)]
+stripplotIt(prepareData(hits1))
+```
+
+Here are the 8 that decline from P10 to 4_weeks.
+```{r}
+hits2 <- rownames(prDat)[which(wtResCont[, "fourweeksVsP10"] < 0)]
+```
+
+Is there any overlap between these probes?
+```{r}
+intersect(hits1, hits2)
+```
+
+If I revisit this workflow but make the p-value cutoff less stringent, maybe I can find the gene expression profile I'm looking for.
+
+```{r}
+cutoff <- 0.01
+nHits <- 8
+wtResCont <- decideTests(wtEbFitCont, p.value = cutoff, method = "global")
+summary(wtResCont)
+```
+
+```{r, fig.width=8, fig.height=8}
+vennDiagram(wtResCont)
+hits5 <- rownames(prDat)[which(wtResCont[, "P10VsP6"] != 0 & 
+                                 wtResCont[, "fourweeksVsP10"] != 0)]
+stripplotIt(prepareData(hits5))
+```
+
+```{r}
+hits6 <- rownames(prDat)[which(wtResCont[, "P10VsP6"] > 0 & 
+                                 wtResCont[, "fourweeksVsP10"] < 0)]
+stripplotIt(prepareData(hits6))
+```
+
+### <dim id="2b">[Take-home exercise](#2a)
+See if you can find one or more probes that have some expression changes up to P6 and then hold steady all the way to 4_weeks.
+> It searches for probes which have gene expression changes both from E16 to P2 and from P2 to P6, and at the same time, no changes from either P6 to P10, or P10 to 4_weeks.
+> The cut-off p-value is set at 1e-04.
+
+```{r}
+colnames(wtDesMat)
+(cont.matrix <- makeContrasts(P2VsE16 = devStageP2 - Intercept,
+                              P6VsP2 = devStageP6 - devStageP2,
+                              P10VsP6 = devStageP10 - devStageP6, 
+                              fourweeksVsP10 = devStage4_weeks - devStageP10, 
+                              levels = wtDesMat))
+wtFitCont <- contrasts.fit(wtFit, cont.matrix)
+wtEbFitCont <- eBayes(wtFitCont)
+cutoff <- 1e-04
+wtResCont <- decideTests(wtEbFitCont, p.value = cutoff, method = "global")
+summary(wtResCont)
+```
+
+```{r, fig.width=8, fig.height=8}
+hits <- rownames(wtDat)[which(wtResCont[, "P2VsE16"] != 0 &
+                                wtResCont[, "P6VsP2"] != 0 & 
+                                wtResCont[, "P10VsP6"] == 0 & 
+                                wtResCont[, "fourweeksVsP10"] == 0)]
+```
+
+Here are the probes I got:
+```{r}
+hits
+stripplotIt((prepareData(hits)))
+```
