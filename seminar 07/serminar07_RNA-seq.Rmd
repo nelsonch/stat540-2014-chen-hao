@@ -103,7 +103,7 @@ Redo the above analysis but first filter the data and remove any gene that has: 
 strain1 <- rownames(des)[des$strain == "C57BL/6J"]
 strain2 <- rownames(des)[des$strain == "DBA/2J"]
 datMin <- data.frame(MinStrain1 = unlist(apply(as.matrix(subset(dat, select = strain1)), 1, min)),
-                     MinStrain2 = unlist(apply(as.matrix(subset(dat, select = strain1)), 1, min)))
+                     MinStrain2 = unlist(apply(as.matrix(subset(dat, select = strain2)), 1, min)))
 rownames(datMin) <- rownames(dat)
 keepRow <- rownames(datMin)[datMin$MinStrain1 > 0 | datMin$MinStrain2 > 0]
 datClean <- dat[keepRow, ]
