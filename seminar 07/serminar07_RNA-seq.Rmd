@@ -1,0 +1,244 @@
+## STAT 540 Seminar 07: RNA-seq - Differential Expression Analysis
+__2014-03-01__
+
+* <dim id="1a">[Repeat the examples in the seminar](#1b)
+  * <dim id="1.1a">[edgeR](#1.1b)
+  * <dim id="1.2a">[Mini exercise](#1.2b)
+  * <dim id="1.3a">[DESeq](#1.3b)
+  * <dim id="1.4a">[Voom & limma](#1.4b)  
+* <dim id="2a">[Take-home exercise](#2b)
+
+> The R markdown file can be found on my [Github](https://github.com/nelsonch/stat540-2014-chen-hao/blob/master/seminar%2007/seminar07.Rmd).
+
+```{r include = FALSE}
+opts_chunk$set(tidy = F, warning=F, comment=NA, prompt=T)
+```
+
+### <dim id="1b">[Repeat the examples in the seminar](#1a)
+#### <dim id="1.1a">[edgeR](#1.1b)
+Install the edgeR package from Bioconductor.
+```{r, eval=FALSE}
+source("http://bioconductor.org/biocLite.R")
+biocLite("edgeR")
+```
+
+```{r}
+library(edgeR)
+```
+
+The following data files will be used in this seminar:
+* [bottomly_count_table.tsv](http://ugrad.stat.ubc.ca/~stat540/examples/bottomly/data/bottomly_count_table.tsv): Data file
+* [bottomly_phenodata.tsv](http://ugrad.stat.ubc.ca/~stat540/examples/bottomly/data/bottomly_phenodata.tsv): Design file
+
+```{r}
+dat <- read.table("bottomly_count_table.tsv", header = TRUE, row.names = 1)
+des <- read.table("bottomly_phenodata.tsv", header = TRUE, row.names = 1)
+str(dat)
+show(des)
+all(rownames(des) == colnames(dat))
+```
+
+```{r}
+with(des, table(strain))
+group <- factor(c(rep("1", 10), rep("2", 11)))
+dge.glm <- DGEList(counts = dat, group = group)
+str(dge.glm)
+```
+> This produces an object of type DGEList with can be manipulated in a similar way to any other list object in R.
+
+```{r}
+names(dge.glm)
+dge.glm[["samples"]]
+```
+* This DGELIst object has two components, one is a matrix call 'counts' storing the count data.
+* The other is a data.frame called 'samples' storing information for samples', including the samples IDs, group information and library sizes (or equally library sequence depth). You can either supply the library size info or it can be calculated from the sums of counts in each column.
+* You can also provide an annotation file for the genes which will be stored in the data.frame 'genes'.
+
+```{r}
+design <- model.matrix(~ group)
+design
+dge.glm.com.disp <- estimateGLMCommonDisp(dge.glm, design, verbose = TRUE)
+names(dge.glm.com.disp)
+dge.glm.trend.disp <- estimateGLMTrendedDisp(dge.glm.com.disp)
+names(dge.glm.trend.disp)
+dge.glm.tag.disp <- estimateGLMTagwiseDisp(dge.glm.trend.disp, design)
+str(dge.glm.tag.disp)
+names(dge.glm.tag.disp)
+```
+> `dge.glm.tag.disp` incoporates all the materials in `dge.glm.com.disp` and `dge.glm.trend.disp`.
+
+Plot the tagwise dispersion against log2-CPM (counts per million)
+```{r}
+plotBCV(dge.glm.tag.disp)
+```
+
+<dim id="1.1mark">Fit the model.
+```{r}
+fit <- glmFit(dge.glm.tag.disp, design)
+colnames(coef(fit))
+lrt <- glmLRT(fit, coef = 2)
+topTags(lrt)
+tt.glm <- topTags(lrt, n = Inf)
+class(tt.glm)
+names(tt.glm)
+nrow(tt.glm$table[tt.glm$table$FDR < 0.01, ])
+interestingSamples <- rownames(tt.glm$table[tt.glm$table$FDR < 1e-50, ])
+cpm(dge.glm.tag.disp)[interestingSamples, ]
+summary(de.glm <- decideTestsDGE(lrt, p = 0.05, adjust = "BH"))
+```
+* 451 genes are under-expressed in group 2 (DBA/2J) compared with group 1 (C57BL/6J), 35660 show no differences in expression while 425 genes are over-expressed.
+
+Plot the tagwise log fold changes against log-cpm
+```{r}
+tags.glm <- rownames(dge.glm.tag.disp)[as.logical(de.glm)]
+plotSmear(lrt, de.tags = tags.glm)
+abline(h = c(-2, 2), col = "blue")
+```
+
+#### <dim id="1.2b">[Mini exercise](#1.2a)
+Redo the above analysis but first filter the data and remove any gene that has: 1. count equal tot zero across all samples 2. count equal to zero in at least one sample in each genotype group
+
+(1) Remove genes.
+```{r}
+strain1 <- rownames(des)[des$strain == "C57BL/6J"]
+strain2 <- rownames(des)[des$strain == "DBA/2J"]
+datMin <- data.frame(MinStrain1 = unlist(apply(as.matrix(subset(dat, select = strain1)), 1, min)),
+                     MinStrain2 = unlist(apply(as.matrix(subset(dat, select = strain1)), 1, min)))
+rownames(datMin) <- rownames(dat)
+keepRow <- rownames(datMin)[datMin$MinStrain1 > 0 | datMin$MinStrain2 > 0]
+datClean <- dat[keepRow, ]
+str(datClean, list.len = 5)
+```
+There are 9483 genes left.
+
+(2) Redo the analysis
+> Variables `group` and `design` remain unchanged.
+
+```{r}
+dge.glm.clean <- DGEList(counts = datClean, group = group)
+dge.glm.com.disp.clean <- estimateGLMCommonDisp(dge.glm.clean, design, verbose = TRUE)
+dge.glm.trend.disp.clean <- estimateGLMTrendedDisp(dge.glm.com.disp.clean)
+dge.glm.tag.disp.clean <- estimateGLMTagwiseDisp(dge.glm.trend.disp.clean, design)
+```
+
+Plot the tagwise dispersion against log2-CPM.
+```{r}
+plotBCV(dge.glm.tag.disp.clean)
+```
+
+```{r}
+fit.clean <- glmFit(dge.glm.tag.disp.clean, design)
+lrt.clean <- glmLRT(fit.clean, coef = 2)
+tt.glm.clean <- topTags(lrt.clean, n = Inf)
+(n <- nrow(tt.glm.clean$table[tt.glm.clean$table$FDR < 0.01, ]))
+```
+* `r n` genes have a FDR less than 0.01.
+
+```{r}
+summary(de.glm.clean <- decideTestsDGE(lrt.clean, p = 0.05, adjust = "BH"))
+```
+* 587 genes are under-expressed in group 2 (DBA/2J) compared with group 1 (C57BL/6J), 8373 show no differences in expression while 523 genes are over-expressed.
+
+Plot the tagwise log fold changes against log-cpm
+```{r}
+tags.glm.clean <- rownames(dge.glm.tag.disp.clean)[as.logical(de.glm.clean)]
+plotSmear(lrt, de.tags = tags.glm.clean)
+abline(h = c(-2, 2), col = "blue")
+```
+
+#### <dim id="1.3b">[DESeq](#1.3a)
+Try the differential expression analysis of the same dataset using DESeq.
+```{r, eval=FALSE}
+source("http://www.bioconductor.org/biocLite.R")
+biocLite("DESeq")
+```
+
+```{r}
+library(DESeq)
+```
+
+Read in the same count table data and grouping information
+```{r}
+deSeqDat <- newCountDataSet(dat, group)
+head(counts(deSeqDat))
+```
+
+Estimate the size factors to account for differences in library coverage and estimate the variance:
+```{r}
+deSeqDat <- estimateSizeFactors(deSeqDat)
+sizeFactors(deSeqDat)
+deSeqDat <- estimateDispersions(deSeqDat)
+```
+
+Plot the estimated dispersions against the mean normalized counts
+```{r}
+plotDispEsts(deSeqDat)
+```
+
+<dim id="1.2mark">Fit the model and examine the results
+```{r}
+results <- nbinomTest(deSeqDat, levels(group)[1], levels(group)[2])
+str(results)
+plotMA(results)
+```
+
+#### <dim id="1.4b">[Voom & limma](#1.4a)  
+```{r}
+library(limma)
+norm.factor <- calcNormFactors(dat)
+dat.voomed <- voom(dat, design, plot = TRUE, lib.size = colSums(dat) * norm.factor)
+dat.voomed
+fit <- lmFit(dat.voomed, design)
+fit <- eBayes(fit)
+topTable(fit)
+```
+
+### <dim id="2b">[Take-home exercise](#2a)
+Choose a specific threshold for the adjusted p value, find the genes identified as differentially expressed using each of edgeR, DESeq and voom+limma. Compare the number of genes in these 3 lists, and draw a venn digram demonstrating the overlap (if any!).
+
+(1) cut-off value for adjusted p-value: 1e-10
+```{r}
+cutoff <- 1e-10
+```
+(2) differentially expressed genes using __edgeR__.
+> Follow the procedures [above](#1.1mark) 
+
+```{r}
+edgeRHits <- tt.glm$table[tt.glm$table$FDR < cutoff, ]
+```
+There are `r nrow(edgeRHits)` which are significatn. Show the first 5 such genes.
+```{r}
+edgeRHits[1:5, ]
+```
+
+(3) differentially expressed genes using __DESeq__
+> Follow the procedures [above](#1.2mark) and be carefull about the "NAs" in the `padj` column.
+
+```{r}
+DESeqHits <- results[results$padj < cutoff & !is.na(results$padj), ]
+```
+There are `r nrow(DESeqHits)` which are significatn. Show the first 5 such genes.
+```{r}
+DESeqHits[1:5, ]
+```
+
+(4) differentially expressed genes using __voom+limma__
+> Follow the procedures [above](#1.4b)
+
+```{r}
+voomlimmaHits <- topTable(fit, coef = "group2", p.value = cutoff, n = Inf)
+```
+There are `r nrow(voomlimmaHits)` which are significatn. Show the first 5 such genes.
+```{r}
+voomlimmaHits[1:5, ]
+```
+
+(5) Draw a venn digram demonstrating the overlap.
+```{r}
+allGenes <- unique(c(rownames(edgeRHits), rownames(DESeqHits), rownames(voomlimmaHits)))
+geneHits <- data.frame(edgeR = allGenes %in% rownames(edgeRHits),
+                       DESeq = allGenes %in% rownames(DESeqHits),
+                       voomlimma = allGenes %in% rownames(voomlimmaHits))
+rownames(geneHits) <- allGenes
+vennDiagram(vennCounts(geneHits))
+```
