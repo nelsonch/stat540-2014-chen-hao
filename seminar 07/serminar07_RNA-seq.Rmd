@@ -109,7 +109,7 @@ keepRow <- rownames(datMin)[datMin$MinStrain1 > 0 | datMin$MinStrain2 > 0]
 datClean <- dat[keepRow, ]
 str(datClean, list.len = 5)
 ```
-There are 9483 genes left.
+* There are 9483 genes left.
 
 (2) Redo the analysis
 > Variables `group` and `design` remain unchanged.
