@@ -103,7 +103,7 @@ Redo the above analysis but first filter the data and remove any gene that has: 
 strain1 <- rownames(des)[des$strain == "C57BL/6J"]
 strain2 <- rownames(des)[des$strain == "DBA/2J"]
 datMin <- data.frame(MinStrain1 = unlist(apply(as.matrix(subset(dat, select = strain1)), 1, min)),
-                     MinStrain2 = unlist(apply(as.matrix(subset(dat, select = strain1)), 1, min)))
+                     MinStrain2 = unlist(apply(as.matrix(subset(dat, select = strain2)), 1, min)))
 rownames(datMin) <- rownames(dat)
 keepRow <- rownames(datMin)[datMin$MinStrain1 > 0 | datMin$MinStrain2 > 0]
 datClean <- dat[keepRow, ]
@@ -153,7 +153,7 @@ source("http://www.bioconductor.org/biocLite.R")
 biocLite("DESeq")
 ```
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 library(DESeq)
 ```
 
@@ -206,7 +206,7 @@ cutoff <- 1e-10
 ```{r}
 edgeRHits <- tt.glm$table[tt.glm$table$FDR < cutoff, ]
 ```
-There are `r nrow(edgeRHits)` which are significatn. Show the first 5 such genes.
+There are `r nrow(edgeRHits)` which are significant. Show the first 5 such genes.
 ```{r}
 edgeRHits[1:5, ]
 ```
@@ -217,7 +217,7 @@ edgeRHits[1:5, ]
 ```{r}
 DESeqHits <- results[results$padj < cutoff & !is.na(results$padj), ]
 ```
-There are `r nrow(DESeqHits)` which are significatn. Show the first 5 such genes.
+There are `r nrow(DESeqHits)` which are significant. Show the first 5 such genes.
 ```{r}
 DESeqHits[1:5, ]
 ```
@@ -228,16 +228,16 @@ DESeqHits[1:5, ]
 ```{r}
 voomlimmaHits <- topTable(fit, coef = "group2", p.value = cutoff, n = Inf)
 ```
-There are `r nrow(voomlimmaHits)` which are significatn. Show the first 5 such genes.
+There are `r nrow(voomlimmaHits)` which are significant. Show the first 5 such genes.
 ```{r}
 voomlimmaHits[1:5, ]
 ```
 
 (5) Draw a venn digram demonstrating the overlap.
 ```{r}
-allGenes <- unique(c(rownames(edgeRHits), rownames(DESeqHits), rownames(voomlimmaHits)))
+allGenes <- rownames(dat)
 geneHits <- data.frame(edgeR = allGenes %in% rownames(edgeRHits),
-                       DESeq = allGenes %in% rownames(DESeqHits),
+                       DESeq = allGenes %in% DESeqHits$id,
                        voomlimma = allGenes %in% rownames(voomlimmaHits))
 rownames(geneHits) <- allGenes
 vennDiagram(vennCounts(geneHits))
