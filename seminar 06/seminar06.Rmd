@@ -189,18 +189,18 @@ stripplotIt(prepareData(hits6))
 ### <dim id="2b">[Take-home exercise](#2a)
 See if you can find one or more probes that have some expression changes up to P6 and then hold steady all the way to 4_weeks.
 > It searches for probes which have gene expression changes both from E16 to P2 and from P2 to P6, and at the same time, no changes from either P6 to P10, or P10 to 4_weeks.
-> The cut-off p-value is set at 1e-04.
+> The cut-off p-value is set at 1e-02.
 
 ```{r}
 colnames(wtDesMat)
-(cont.matrix <- makeContrasts(P2VsE16 = devStageP2 - Intercept,
+(cont.matrix <- makeContrasts(P2VsE16 = devStageP2,
                               P6VsP2 = devStageP6 - devStageP2,
                               P10VsP6 = devStageP10 - devStageP6, 
                               fourweeksVsP10 = devStage4_weeks - devStageP10, 
                               levels = wtDesMat))
 wtFitCont <- contrasts.fit(wtFit, cont.matrix)
 wtEbFitCont <- eBayes(wtFitCont)
-cutoff <- 1e-04
+cutoff <- 1e-02
 wtResCont <- decideTests(wtEbFitCont, p.value = cutoff, method = "global")
 summary(wtResCont)
 ```
