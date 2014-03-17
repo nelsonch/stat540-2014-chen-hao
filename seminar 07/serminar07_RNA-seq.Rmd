@@ -59,7 +59,7 @@ design <- model.matrix(~ group)
 design
 dge.glm.com.disp <- estimateGLMCommonDisp(dge.glm, design, verbose = TRUE)
 names(dge.glm.com.disp)
-dge.glm.trend.disp <- estimateGLMTrendedDisp(dge.glm.com.disp)
+dge.glm.trend.disp <- estimateGLMTrendedDisp(dge.glm.com.disp, design)
 names(dge.glm.trend.disp)
 dge.glm.tag.disp <- estimateGLMTagwiseDisp(dge.glm.trend.disp, design)
 str(dge.glm.tag.disp)
@@ -117,7 +117,7 @@ str(datClean, list.len = 5)
 ```{r}
 dge.glm.clean <- DGEList(counts = datClean, group = group)
 dge.glm.com.disp.clean <- estimateGLMCommonDisp(dge.glm.clean, design, verbose = TRUE)
-dge.glm.trend.disp.clean <- estimateGLMTrendedDisp(dge.glm.com.disp.clean)
+dge.glm.trend.disp.clean <- estimateGLMTrendedDisp(dge.glm.com.disp.clean, design)
 dge.glm.tag.disp.clean <- estimateGLMTagwiseDisp(dge.glm.trend.disp.clean, design)
 ```
 
