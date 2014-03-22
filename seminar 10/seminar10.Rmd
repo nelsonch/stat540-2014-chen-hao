@@ -1,0 +1,485 @@
+## STAT 540 Seminar 10: Supervised learning, classification, cross validation, variable selection
+### Hao Chen
+__2014-03-21__
+
+* <dim id="1a">[Data Preparation](#1b)
+* <dim id="2a">[Classification](#2b)
+   * <dim id="2a1">[Feature and Model Selection](#2b1)
+   * <dim id="2a2">[Error Rate](#2b2) 
+   * <dim id="2a3">[Testing the selected model](#2b3) 
+   * <dim id="2a4">[Exercise 1](#2b4) 
+   * <dim id="2a5">[Exercise 2](#2b5) 
+* <dim id="3a">[CMA](#3b)
+   
+> The R markdown file can be found on my [Github](https://github.com/nelsonch/stat540-2014-chen-hao/blob/master/seminar%2010/seminar10.Rmd).
+
+```{r include = FALSE}
+opts_chunk$set(tidy = F, warning=F, comment=NA, prompt=T)
+```
+
+```{r, eval=FALSE, echo=FALSE}
+source("http://bioconductor.org/biocLite.R")
+biocLite("GEOquery")
+biocLite("CMA")
+```
+
+Load required packages.
+```{r, message=FALSE}
+library(MASS)         # for LDA
+library(reshape)      # melt an object into a form suitable for easy casting
+library(car)          # re-label factor
+library(limma)        # for DEA
+library(e1071)        # for SVM
+library(ROCR)         # get AUC
+library(caTools)      # get AUC 
+library(CMA)          # unified supervised learning package
+library(GEOquery)     # retrieve datasets from GEO
+library(lattice)      # plot figure
+library(randomForest) # for RF
+```
+
+### <dim id="1b">[Data Preparation](#1a)
+a. Retrieve datasets from GEO with `getGEO` from `GEOquery` package. 
+```{r}
+if (file.exists("class_LNstatus.Rdata")) {
+  load("class_LNstatus.Rdata")
+} else {
+  datgeo <- getGEO("GSE23177", GSEMatrix = TRUE) # returns a list
+  dat <- datgeo[[1]]  # dat is an ExpressionSets
+  str(pData(dat), max.level = 0)
+  
+  # extract only those variables of interest
+  pData(dat) <- subset(pData(dat), select = c("characteristics_ch1.2", 
+                                              "characteristics_ch1.3", 
+                                              "characteristics_ch1"))
+  names(pData(dat)) <- c("LnStatus", "LnRatio", "Set")
+  # split the ExpressionSet into training and test sets.
+  train.es <- dat[, dat$Set == "patient type: training set"]
+  test.es <- dat[, dat$Set != "patient type: training set"] 
+  
+  # Re-label factor
+  pData(train.es)$LnStatus <- recode(pData(train.es)$LnStatus, 
+                                     "levels(pData(train.es)$LnStatus)[1]='neg'; else='pos'", 
+                                      levels = c("neg", "pos"))
+    
+  pData(test.es)$LnStatus <- recode(pData(test.es)$LnStatus, 
+                                    "levels(pData(test.es)$LnStatus)[1]='neg'; else='pos'", 
+                                    levels = c("neg", "pos")) 
+  
+  # create data matrices with expression values (probesets in rows). 
+  trainDat <- exprs(train.es)
+  testDat <- exprs(test.es) 
+  
+  # Redefine the quantitative variable LnRatio to make it a numeric variable.
+  ntrain <- dim(pData(train.es))[1]
+  ntest <- dim(pData(test.es))[1] 
+  pData(train.es)$LnRatio <- as.numeric(unlist(strsplit(as.vector(unlist(pData(train.es)$LnRatio)), 
+                                                         ":", fixed = TRUE))[(1:ntrain) * 2])
+  pData(test.es)$LnRatio <- as.numeric(unlist(strsplit(as.vector(unlist(pData(test.es)$LnRatio)), 
+                                                        ":", fixed = TRUE))[(1:ntest) * 2])
+  
+  # save the data to avoid future re-downloading
+  save(dat, trainDat, testDat, train.es, test.es, file = "class_LNstatus.Rdata")
+}
+```
+
+b. Exploratory analysis of the data.
+```{r}
+table(pData(train.es)$LnStatus)
+table(pData(test.es)$LnStatus)
+tapply(pData(train.es)$LnRatio, pData(train.es)$LnStatus, summary)
+tapply(pData(test.es)$LnRatio, pData(test.es)$LnStatus, summary)
+```
+
+c. Look at the expression of 3 randomly picked genes in both training and test sets.
+```{r}
+set.seed(1234)
+getMe <- sample(1:nrow(train.es), size = 3)
+# training data
+trDat <- trainDat[getMe, ]
+trDat <- data.frame(LnStatus = pData(train.es)$LnStatus, 
+                    Set = rep("train", nrow(pData(train.es))), t(trDat))
+str(trDat)
+plotDat.train <- melt(trDat, id = c("LnStatus", "Set"), variable_name = "gene")
+colnames(plotDat.train)[colnames(plotDat.train) == "value"] = "gExp"
+# test data
+tDat <- testDat[getMe, ]
+tDat <- data.frame(LnStatus = pData(test.es)$LnStatus, 
+                   Set = rep("test", nrow(pData(test.es))), t(tDat))
+plotDat.test <- melt(tDat, id = c("LnStatus", "Set"), variable_name = "gene")
+colnames(plotDat.test)[colnames(plotDat.test) == "value"] = "gExp"
+plotDat <- rbind(plotDat.train, plotDat.test)
+stripplot(gExp ~ LnStatus | gene + Set, plotDat, grid = TRUE, group = LnStatus, 
+          auto.key = TRUE, jitter.data = TRUE)
+```
+
+### <dim id="2b">[Classification](#2a)
+The prediction of a discrete response is usually refer to as classification. We will find the best-trained classifier and use it to predict the `LnStatus` of the 20 samples in the test set.
+
+#### <dim id="2b1">[Feature and Model Selection](#2a1)
+First identify the best set of features that we will use to train the model using a cross-validation.
+* divide the training set into 6 folds (8 positive and 8 negative samples within each fold).
+* for each round of cross-validation, use one fold as the test data and the rest of the data as training to select features and train different classifier.
+
+a. Cross validation splits
+```{r}
+nfold <- 6
+tabTrain <- table(train.es$LnStatus)
+indlist <- sapply(names(tabTrain), function(z) which(train.es$LnStatus == z), simplify = FALSE)
+set.seed(1234)
+fold.pos <- matrix(sample(indlist[["pos"]]), nrow = nfold)
+fold.neg <- matrix(sample(indlist[["neg"]]), nrow = nfold)
+```
+
+b. Loop for feature selection and modeling.
+> Use the top-50 genes selected by `limma` as features.
+> Methods like LDA and Logit can not be run on more features than samples, however, other methods like kNN or SVM will do well with more features.
+
+Compare 7 different models: kNN for k={1,5,10,15}, LDA, Logit, SVM.
+```{r}
+ngenes <- 50
+nmethod <- 7 
+# Define here an output objects to store results
+pr.err <- matrix(-1, nfold, nmethod, dimnames = list(paste0("Fold", 1:nfold), 
+    c("1NN", "5NN", "10NN", "15NN", "LDA", "Logit", "SVM")))
+for (i in 1:nfold) {    
+    # Test Fold for the i-th step
+    testdat.fold <- trainDat[, c(fold.pos[i, ], fold.neg[i, ])]
+    # I will create a factor of classes for the test set of the i_th fold
+    testclass.fold <- train.es$LnStatus[c(fold.pos[i, ], fold.neg[i, ])]
+        
+    # The rest of the samples are the training set for the i-th step
+    traindat.fold <- trainDat[, -c(fold.pos[i, ], fold.neg[i, ])]
+    trainclass.fold <- train.es$LnStatus[-c(fold.pos[i, ], fold.neg[i, ])]
+    
+    # Step 1: feature selection, a different set of genes will be selected for each fold!
+    limma.dat <- as.data.frame(traindat.fold)
+    desMat <- model.matrix(~trainclass.fold, limma.dat)  #design matrix
+    trainFit <- lmFit(limma.dat, desMat)
+    eBtrainFit <- eBayes(trainFit)
+    
+    # top-50 limma genes
+    top.fold <- topTable(eBtrainFit, coef = which(colnames(coef(trainFit)) != "(Intercept)"), 
+                         n = ngenes, sort.by = "P")
+    
+    # Retain the top-50 limma genes from the train and test sets
+    traindat.fold <- traindat.fold[rownames(top.fold), ]
+    testdat.fold <- testdat.fold[rownames(top.fold), ]
+    
+    # STEP 2: select a classifier Set a counter for the method tested
+    l <- 0
+    
+    # kNN classifiers
+    for (kk in c(1, 5, 10, 15)) {
+        l <- l + 1
+        # knn needs samples in rows
+        yhat.knn <- knn(train = t(traindat.fold), test = t(testdat.fold), 
+                        cl = trainclass.fold, k = kk)
+        # Store the prediction error for each kk within this fold
+        pr.err[i, l] <- mean(testclass.fold != yhat.knn)
+    }  #end of kNN loop
+    
+    # LDA method. 
+    # Note that you can change the prior parameter to reflect a different proportion of case 
+    # and control samples. The default is to use the class proportions from the training set.
+    
+    m.lda <- lda(x = t(traindat.fold), group = trainclass.fold, prior = c(0.5, 0.5))
+    yhat.lda <- predict(m.lda, newdata = t(testdat.fold))$class
+    pr.err[i, "LDA"] <- mean(testclass.fold != yhat.lda)
+    
+    # Logit
+    glm.dat <- data.frame(t(traindat.fold), group = trainclass.fold)
+    m.log <- glm(group ~ ., data = glm.dat, family = binomial)
+    
+    pr.log <- predict(m.log, newdata = data.frame(t(testdat.fold)), type = "response")
+    pr.cl <- rep(0, length(testclass.fold))
+    pr.cl[pr.log > 1/2] <- "pos"
+    pr.cl[pr.log <= 1/2] <- "neg"  
+    pr.cl <- factor(pr.cl)
+    pr.err[i, "Logit"] <- mean(pr.cl != testclass.fold)
+    
+    # SVM
+    m.svm <- svm(x = t(traindat.fold), y = trainclass.fold, cost = 1, 
+                 type = "C-classification", kernel = "linear")
+    pr.svm <- predict(m.svm, newdata = t(testdat.fold))    
+    pr.err[i, "SVM"] <- mean(pr.svm != testclass.fold)
+}  #end of CV loop
+```
+> ALl the 12 warnings come from `glm.fit`, the `Logit` classifier: algorithm did not converge
+
+#### <dim id="2b2">[Error Rate](#2a2) 
+Get the average prediction error for all methods.
+```{r}
+cv.err <- colMeans(pr.err)
+
+# mean - 1 sd (sd of the 6 error rates)
+ls <- cv.err - apply(pr.err, 2, sd)
+
+# mean + 1 sd (sd of the 6 error rates)
+us <- cv.err + apply(pr.err, 2, sd)
+
+# plot the results
+plot(1:nmethod, cv.err, ylim = c(0, 1), xlim = c(1, (nmethod + 0.5)), type = "n", 
+     axes = FALSE, xlab = "Classifier", ylab = "Error rate", main = "6-fold CV Error")
+for (j in 1:ncol(pr.err)) points(jitter(rep(j, 6), factor = 2), jitter(pr.err[, j]), 
+                                 cex = 0.8, pch = "X", col = "gray")
+for (i in 1:nmethod) lines(c(i, i), c(ls[i], us[i]), lwd = 2, col = "gray")
+points(1:nmethod, ls, pch = 19, col = "red")
+points(1:nmethod, us, pch = 19, col = "green")
+points(1:nmethod, cv.err, pch = 19, cex = 1.5, col = "black")
+axis(2)
+axis(1, 1:nmethod, colnames(pr.err))
+box()
+```
+* According to these results, 1NN and 10NN may be the better classifier to try in the test data.
+* However, this CV results depend on the first split of the data we did. 
+
+#### <dim id="2b3">[Testing the selected model](#2a3) 
+Now that we decided on which method we are going to use to classify samples in the test set, we need to train the model using the FULL training set and then classify samples of the test set. I will use the 10NN model.
+
+```{r}
+yhat.knn <- knn(train = t(trainDat), test = t(testDat), prob = TRUE, 
+                cl = train.es$LnStatus, k = 10)
+pr.knn <- ifelse(yhat.knn == "pos", attributes(yhat.knn)$prob, 1 - attributes(yhat.knn)$prob)
+mean(test.es$LnStatus != yhat.knn)
+colAUC(pr.knn, test.es$LnStatus, plotROC = T, alg = "ROC")
+```
+
+> I have a quesition here: It seems that we are using all the genes to train the model in the FULL training set. Don't we need to use `limma` to pick the top 50 DE genes as in each fold?
+Such as something like this:
+
+```{r}
+    # Step 1: feature selection,
+    limma.dat <- as.data.frame(trainDat)
+    desMat <- model.matrix(~ train.es$LnStatus, limma.dat)  
+    trainFit <- lmFit(limma.dat, desMat)
+    eBtrainFit <- eBayes(trainFit)
+    
+    # top-50 limma genes
+    top.fold <- topTable(eBtrainFit, coef = which(colnames(coef(trainFit)) != "(Intercept)"), 
+                         n = ngenes, sort.by = "P")
+    
+    # Retain the top-50 limma genes for the FULL training set and test set
+    trainDat <- trainDat[rownames(top.fold), ]
+    testDat <- testDat[rownames(top.fold), ]
+
+    # Step 2: fit the model for the FULL training set and classify samples in the test set
+    yhat.knn <- knn(train = t(trainDat), test = t(testDat), prob = TRUE, 
+                    cl = train.es$LnStatus, k = 10)
+    pr.knn <- ifelse(yhat.knn == "pos", attributes(yhat.knn)$prob, 1 - attributes(yhat.knn)$prob)
+    mean(test.es$LnStatus != yhat.knn)
+    colAUC(pr.knn, test.es$LnStatus, plotROC = T, alg = "ROC")
+```
+
+#### <dim id="2b4">[Exercise 1](#2a4) 
+Perform 100 runs of this CV before selecting a model to test! Add at least on model to the list of models, e.g., use genes with a p-val threshold < cutoff.
+* The Random Forest (RF) classifier is added.
+* The threshold for p-value is chosen at 5e-4.
+* In each of the 100 runs, I calculate the mean error rate and the mean AUC from the 6 CV folds for each classifier.
+* In the end, I plot the mean and sd of 100 run means (error rate & AUC) for each classifier.
+
+> It took my laptop a long time to run the following code. I don't want to re-run it in the R markdown file, so I saved my result and directly loaded it here. The results may differ when re-running the code since the random split of the data in the 100 runs may differ. 
+
+```{r}
+if (file.exists("Results100Runs.Rdata")) {
+  load("Results100Runs.Rdata")
+} else {
+  nfold <- 6
+  nmethod <- 8
+  nrun <- 100
+  cutoff <- 5e-4
+  tabTrain <- table(train.es$LnStatus)
+  indlist <- sapply(names(tabTrain), function(z) which(train.es$LnStatus == z), simplify = FALSE)
+  avg.err <-  matrix(-1, nrun, nmethod, dimnames = list(paste0("run", 1:nrun), 
+                                                        c("1NN", "5NN", "10NN", "15NN", "LDA",
+                                                          "Logit", "SVM", "RF")))
+  avg.auc <-  matrix(-1, nrun, nmethod, dimnames = list(paste0("run", 1:nrun), 
+                                                        c("1NN", "5NN", "10NN", "15NN", "LDA",
+                                                          "Logit", "SVM", "RF")))
+
+  for (j in 1:nrun){
+    fold.pos <- matrix(sample(indlist[["pos"]]), nrow = nfold)
+    fold.neg <- matrix(sample(indlist[["neg"]]), nrow = nfold)  
+    ###  compare 8 different models: kNN for k={1,5,10,15}, LDA, Logit, SVM, RF(randomForest)
+    pr.err <- matrix(-1, nfold, nmethod, dimnames = list(paste0("Fold", 1:nfold), 
+                                                         c("1NN", "5NN", "10NN", "15NN", "LDA",
+                                                           "Logit", "SVM", "RF")))
+    pr.auc <- matrix(-1, nfold, nmethod, dimnames = list(paste0("Fold", 1:nfold), 
+                                                         c("1NN", "5NN", "10NN", "15NN", "LDA",
+                                                           "Logit", "SVM", "RF")))
+  
+    for (i in 1:nfold){
+      # Test Fold for the i-th step
+      testdat.fold <- trainDat[, c(fold.pos[i, ], fold.neg[i, ])]
+      testclass.fold <- train.es$LnStatus[c(fold.pos[i, ], fold.neg[i, ])]
+        
+      # The rest of the samples are the training set for the i-th step
+      traindat.fold <- trainDat[, -c(fold.pos[i, ], fold.neg[i, ])]
+      trainclass.fold <- train.es$LnStatus[-c(fold.pos[i, ], fold.neg[i, ])]
+    
+      # Step 1: feature selection(with limma)
+      limma.dat <- as.data.frame(traindat.fold)
+      desMat <- model.matrix(~trainclass.fold, limma.dat)  
+      trainFit <- lmFit(limma.dat, desMat)
+      eBtrainFit <- eBayes(trainFit)
+      hit.fold <- topTable(eBtrainFit, coef = which(colnames(coef(trainFit)) != "(Intercept)"), 
+                           n = Inf)
+      hit.fold <- rownames(hit.fold)[hit.fold$P.Value < cutoff]
+      # Redefine train and test sets
+      traindat.fold <- traindat.fold[hit.fold, ]
+      testdat.fold <- testdat.fold[hit.fold, ]
+    
+      # Step 2: select a classifier Set a counter for the method tested
+      l <- 0 
+    
+      # kNN classifiers
+      for (kk in c(1, 5, 10, 15)){
+        l <- l + 1
+        yhat.knn <- knn(train = t(traindat.fold), prob=TRUE, test = t(testdat.fold), 
+                        cl = trainclass.fold, k = kk)
+        pr.knn <- ifelse(yhat.knn == "pos", attributes(yhat.knn)$prob, 1 - attributes(yhat.knn)$prob)
+        pr.err[i, l] <- mean(testclass.fold != yhat.knn)  
+        pr.auc[i, l] <- colAUC(pr.knn, testclass.fold, plotROC = F, alg = "ROC")
+      } 
+    
+      # LDA
+      m.lda <- lda(x = t(traindat.fold), group = trainclass.fold, prior = c(0.5, 0.5))
+      yhat.lda <- predict(m.lda, newdata = t(testdat.fold))$class
+      pr.lda <- predict(m.lda, newdata = t(testdat.fold))$posterior[, "pos"]
+      pr.err[i, "LDA"] <- mean(testclass.fold != yhat.lda)
+      pr.auc[i, "LDA"] <- colAUC(pr.lda, testclass.fold, plotROC = F, alg = "ROC")
+     
+      # Logit
+      glm.dat <- data.frame(t(traindat.fold), group = trainclass.fold)
+      m.log <- glm(group ~ ., data = glm.dat, family = binomial)
+      pr.log <- predict(m.log, newdata = data.frame(t(testdat.fold)), type = "response")
+      pr.cl <- rep(0, length(testclass.fold))
+      pr.cl[pr.log > 1/2] <- "pos"
+      pr.cl[pr.log <= 1/2] <- "neg"
+      pr.cl <- factor(pr.cl)
+      pr.err[i, "Logit"] <- mean(pr.cl != testclass.fold)
+      pr.auc[i, "Logit"] <- colAUC(pr.log, testclass.fold, plotROC = F, alg = "ROC")
+    
+      # SVM
+      m.svm <- svm(x = t(traindat.fold), y = trainclass.fold, cost = 1, probability=TRUE, 
+                   type = "C-classification",  kernel = "linear")
+      yhat.svm <- predict(m.svm, newdata = t(testdat.fold))   
+      pr.svm <- attr(predict(m.svm, newdata = t(testdat.fold), probability = TRUE, 
+                             decision.values = TRUE), "probabilities")[, "pos"]
+      pr.err[i, "SVM"] <- mean(yhat.svm != testclass.fold) 
+      pr.auc[i, "SVM"] <- colAUC(pr.svm, testclass.fold, plotROC = F, alg = "ROC")
+    
+      # RF
+      m.rf = randomForest(group ~ ., data = glm.dat, ntree = 500, importance = TRUE)
+      yhat.rf <- predict(m.rf, newdata = data.frame(t(testdat.fold)), type = "response") 
+      pr.rf <- predict(m.rf, newdata = data.frame(t(testdat.fold)), type = "prob")[, "pos"]  
+      pr.err[i, "RF"] <- mean(testclass.fold != yhat.rf)
+      pr.auc[i, "RF"] <- colAUC(pr.rf, testclass.fold, plotROC = F, alg = "ROC")
+    }
+    avg.err[j, ] <- colMeans(pr.err)
+    avg.auc[j, ] <- colMeans(pr.auc)
+  
+    # save the result 
+    save(avg.err, avg.auc, file = "Results100Runs.Rdata")
+  } #end of CV loop
+} 
+```
+
+Plot the result of Error rate.
+```{r}
+nmethod <- 8
+# result of err
+cv.err <- colMeans(avg.err)
+# mean - 1 sd (sd of the 100 average error rates)
+ls.err <- cv.err - apply(avg.err, 2, sd)
+# mean + 1 sd (sd of the 100 average error rates)
+us.err <- cv.err + apply(avg.err, 2, sd)
+  
+# plot result of err
+plot(1:nmethod, cv.err, ylim = c(0, 1), xlim = c(1, (nmethod + 0.5)), type = "n", 
+     axes = FALSE, xlab = "Classifier", ylab = "Error rate", main = "6-fold CV Error")
+for (k in 1:nmethod) lines(c(k, k), c(ls.err[k], us.err[k]), lwd = 2, col = "gray")
+points(1:nmethod, ls.err, pch = 20, col = "red")
+points(1:nmethod, us.err, pch = 20, col = "green")
+points(1:nmethod, cv.err, pch = 20, cex = 1.5, col = "black")
+axis(2)
+axis(1, 1:nmethod, colnames(avg.err))
+text(1:nmethod + 0.35, cv.err, round(cv.err, 3), cex=0.7)
+text(1:nmethod + 0.35, ls.err, round(ls.err, 3), cex=0.7)
+text(1:nmethod + 0.35, us.err, round(us.err, 3), cex=0.7)
+box()
+```
+* The black dots represent the mean of the 100 run means of error rates for the 8 classifiers.
+* The distance between the black dot and red/green dot represents the sd of the 100 run means of error rates for each of the classifiers.
+
+#### <dim id="2b5">[Exercise 2](#2a5) 
+Exercise 2: Use AUC as a criteria to select a model based on the training data! Tip: extract the predicted probabilities from each method and use the roc function in ROCR.
+```{r}
+# result of auc
+cv.auc <- colMeans(avg.auc)
+# mean - 1 sd (sd of the 100 average auc)
+ls.auc <- cv.auc - apply(avg.auc, 2, sd)
+# mean + 1 sd (sd of the 100 average auc)
+us.auc <- cv.auc + apply(avg.auc, 2, sd)
+
+# plot result of auc
+plot(1:nmethod, cv.auc, ylim = c(0, 1), xlim = c(1, (nmethod + 0.5)), type = "n", 
+     axes = FALSE, xlab = "Classifier", ylab = "AUC", main = "6-fold CV AUC")
+for (k in 1:nmethod) lines(c(k, k), c(ls.auc[k], us.auc[k]), lwd = 2, col = "gray")
+points(1:nmethod, ls.auc, pch = 20, col = "red")
+points(1:nmethod, us.auc, pch = 20, col = "green")
+points(1:nmethod, cv.auc, pch = 20, cex = 1.5, col = "black")
+axis(2)
+axis(1, 1:nmethod, colnames(avg.auc))
+text(1:nmethod + 0.35, cv.auc, round(cv.auc,3), cex=0.7)
+text(1:nmethod + 0.35, ls.auc, round(ls.auc,3), cex=0.7)
+text(1:nmethod + 0.35, us.auc, round(us.auc,3), cex=0.7)
+box()
+```
+* The black dots represent the mean of the 100 run means of AUC for the 8 classifiers.
+* The distance between the black dot and red/green dot represents the sd of the 100 run means of AUC for each of the classifiers.
+
+### <dim id="3b">[CMA](#3a)
+Many steps of the CV defined above can be easily done with CMA. 
+```{r}
+splits <- GenerateLearningsets(y = train.es$LnStatus, method = "CV", fold = 6, strat = TRUE)
+featureScores <- GeneSelection(X = t(trainDat), y = train.es$LnStatus, learningsets = splits, 
+    method = "limma")
+
+# Compare list of selected genes using:
+toplist(featureScores)
+
+# We can aggregate the results across the 6 splits.
+
+seliter <- numeric()
+for (i in 1:nfold) seliter <- c(seliter, toplist(featureScores, iter = i, top = 10, 
+    show = FALSE)$index)
+sort(table(seliter), dec = T)  # summarize
+
+# Choose the 20 probes which are chosen most commonly in the 6 splits
+bestprobes <- as.numeric(names(sort(table(seliter), dec = T)))[1:20]
+
+# examine the annotations. I just selected a few columns from the fData of the eSet.
+# fData(dat)[bestprobes, c("Gene Symbol", "Gene Title", "ENTREZ_GENE_ID", "Representative Public ID")]
+```
+> CMA can not do a full nested cross-validation and CMA is more designed for CV. 
+
+Make a learningsets object that has just one "split" defined by the samples in the training set.
+```{r}
+m <- matrix(which(dat$Set == "patient type: training set"), 1)
+
+full.learningset <- new("learningsets", learnmatrix = m, method = "my own", 
+    ntrain = 96, iter = 1)
+
+fullFeatureScores <- GeneSelection(X = t(exprs(dat)), learningsets = full.learningset, 
+    y = dat$LnStatus, method = "t.test")
+
+testclassif <- classification(X = t(exprs(dat)), y = dat$LnStatus, learningsets = full.learningset, 
+    genesel = fullFeatureScores, nbgene = 100, classifier = pknnCMA, k = 5)
+
+# Evaluation:
+tres <- testclassif[[1]]
+ftable(tres)
+roc(tres)
+```
+> This is the end of seminar10.
